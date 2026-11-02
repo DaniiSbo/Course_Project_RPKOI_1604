@@ -1,118 +1,200 @@
+﻿/*
+ * Сбоев Даниил Игоревич, группа бОТИ-261
+ */
+
+/*
+ * Файл - программа контроля облачной инфраструктуры.
+ * Программа рассчитывает показатель динамики Q для компонентов
+ * WEB, DBS и IOP, определяет состояния и выявляет инциденты.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 
-#define POINT_COUNT 5
-#define K 1
-#define L 1.0
+#define POINT_COUNT 5       /* число отсчётов */
+#define K 1                 /* период сравнения */
+#define L 1.0               /* порог показателя Q */
+#define L_MIN (-L)          /* нижняя граница нормы */
+#define L_MAX L             /* верхняя граница нормы */
+#define SOURCE_COUNT 13     /* общее число измерений */
+#define PAIR_COUNT 10       /* число рассчитанных пар */
 
+#define STATE_NONE (-1)     /* состояние не определено */
+#define STATE_NORMAL 0      /* состояние "норма" */
+#define STATE_ALARM 1       /* состояние "тревога" */
+
+#define INCIDENT_ALL_ALARM 1 /* тип инцидента: тревога всех компонентов */
+
+/*
+ * структура записи журнала инцидентов
+ */
 typedef struct {
-    int time;
-    int type;
+	int time;   /* номер отсчёта */
+	int type;   /* тип инцидента */
 } Incident;
 
-/* Считает Q как логарифм отношения текущего значения к предыдущему. */
-double calc_q(float current, float previous) {
-    return log((double)current / previous);
-}
+int check_pair(const char *pname, int t, float x, int t_prev,
+	float x_prev);
+int is_incident(int web_state, int dbs_state, int iop_state);
+void print_point(int t, int web_state, int dbs_state, int iop_state);
+void check_incident(int t, int web_state, int dbs_state, int iop_state,
+	int *pincident_count);
+const char *state_name(int state);
 
-/* Проверяет выход показателя за порог L. */
-int is_alarm(double q) {
-    return q < -L || q > L;
-}
-
-/* Считает Q одного компонента, печатает строки и отмечает тревоги по отсчётам. */
-int check_component(const char *name, const float values[], const int times[],
-                    int count, int alarms[]) {
-    int pairs = 0;
-
-    for (int i = K; i < count; i++) {
-        double q = calc_q(values[i], values[i - K]);
-        int alarm = is_alarm(q);
-
-        alarms[times[i] - 1] = alarm;
-        pairs++;
-        printf("%s\t%d\t%.1f\t%d\t%.1f\t%.4f\t%s\n", name,
-               times[i], values[i], times[i - K], values[i - K],
-               q, alarm ? "ТРЕВОГА" : "НОРМА");
-    }
-
-    return pairs;
-}
-
-/* Возвращает текст состояния компонента. */
-const char *state_name(int state) {
-    if (state < 0) {
-        return "нет Q";
-    }
-    if (state == 1) {
-        return "ТРЕВОГА";
-    }
-
-    return "НОРМА";
-}
-
-/* Проверяет правило инцидента: все три компонента в тревоге. */
-int is_incident(int web_state, int dbs_state, int iop_state) {
-    return web_state == 1 && dbs_state == 1 && iop_state == 1;
-}
-
+/*
+ * Назначение: контрольный расчёт на тестовом наборе.
+ * Возврат: 0 при успешном завершении.
+ */
 int main(void) {
-    float web[POINT_COUNT] = {41.9f, 48.3f, 48.8f, 49.3f};
-    int web_times[POINT_COUNT] = {1, 3, 4, 5};
-    float dbs[POINT_COUNT] = {57.4f, 55.4f, 53.4f, 51.4f, 54.8f};
-    int dbs_times[POINT_COUNT] = {1, 2, 3, 4, 5};
-    float iop[POINT_COUNT] = {30.2f, 29.5f, 34.1f, 32.6f};
-    int iop_times[POINT_COUNT] = {1, 2, 3, 5};
-    int web_state[POINT_COUNT] = {-1, -1, -1, -1, -1};
-    int dbs_state[POINT_COUNT] = {-1, -1, -1, -1, -1};
-    int iop_state[POINT_COUNT] = {-1, -1, -1, -1, -1};
-    Incident incidents[POINT_COUNT];
-    int incident_count = 0;
-    int q_count = 0;
+	/* измерения: у WEB нет отсчёта 2, у IOP нет отсчёта 4 */
+	float web1 = 41.9f, web3 = 48.3f, web4 = 48.8f, web5 = 49.3f;
+	float dbs1 = 57.4f, dbs2 = 55.4f, dbs3 = 53.4f, dbs4 = 51.4f;
+	float dbs5 = 54.8f;
+	float iop1 = 30.2f, iop2 = 29.5f, iop3 = 34.1f, iop5 = 32.6f;
 
-    system("chcp 65001 > nul");
+	/* состояния компонентов по отсчётам */
+	int web_1 = STATE_NONE, web_2 = STATE_NONE, web_3 = STATE_NONE;
+	int web_4 = STATE_NONE, web_5 = STATE_NONE;
+	int dbs_1 = STATE_NONE, dbs_2 = STATE_NONE, dbs_3 = STATE_NONE;
+	int dbs_4 = STATE_NONE, dbs_5 = STATE_NONE;
+	int iop_1 = STATE_NONE, iop_2 = STATE_NONE, iop_3 = STATE_NONE;
+	int iop_4 = STATE_NONE, iop_5 = STATE_NONE;
 
-    puts("Курсовой проект: контроль облачной инфраструктуры");
-    puts("Вариант 25, этап 1: контрольный расчёт на пяти отсчётах");
-    puts("Компоненты: WEB, DBS, IOP");
-    printf("Q[i] = ln(X[i] / X[i-k]), k = %d, L = %.1f\n", K, L);
-    printf("Диапазон нормы: [%.1f; %.1f]\n", -L, L);
-    printf("Тестовый набор: 13 измерений, %d отсчётов\n\n", POINT_COUNT);
+	/* число найденных инцидентов */
+	int incident_count = 0;
 
-    puts("Таблица 1. Расчёт показателя Q по доступным парам измерений");
-    puts("Компонент\tВремя i\tX[i]\tВремя i-k\tX[i-k]\tQ\tСостояние");
-    q_count += check_component("WEB", web, web_times, 4, web_state);
-    q_count += check_component("DBS", dbs, dbs_times, 5, dbs_state);
-    q_count += check_component("IOP", iop, iop_times, 4, iop_state);
+	system("chcp 65001 > nul");
 
-    puts("\nТаблица 2. Состояния компонентов по отсчётам");
-    puts("Время\tWEB\tDBS\tIOP\tИнцидент");
-    for (int t = 0; t < POINT_COUNT; t++) {
-        int incident = is_incident(web_state[t], dbs_state[t], iop_state[t]);
+	puts("Программа контроля облачной инфраструктуры");
+	puts("Назначение: расчёт показателя динамики и выявление инцидентов");
+	puts("Контрольный расчёт на пяти тестовых отсчётах");
+	puts("Компоненты: WEB, DBS, IOP");
+	printf("Q[i] = ln(X[i] / X[i-k]), k = %d, L = %.1f\n", K, L);
+	printf("Диапазон нормы: [%.1f; %.1f]\n", L_MIN, L_MAX);
+	printf("Тестовый набор: %d измерений, %d отсчётов\n\n",
+		SOURCE_COUNT, POINT_COUNT);
 
-        printf("%d\t%s\t%s\t%s\t%s\n", t + 1,
-               state_name(web_state[t]), state_name(dbs_state[t]),
-               state_name(iop_state[t]), incident ? "ДА" : "нет");
+	puts("Таблица 1. Расчёт показателя Q по доступным парам измерений");
+	puts("Компонент Время i X[i] Время i-k X[i-k] Q       Состояние");
 
-        if (incident) {
-            incidents[incident_count].time = t + 1;
-            incidents[incident_count].type = 1;
-            incident_count++;
-        }
-    }
+	/* расчёт показателя по доступным парам измерений */
+	web_3 = check_pair("WEB", 3, web3, 1, web1);
+	web_4 = check_pair("WEB", 4, web4, 3, web3);
+	web_5 = check_pair("WEB", 5, web5, 4, web4);
+	dbs_2 = check_pair("DBS", 2, dbs2, 1, dbs1);
+	dbs_3 = check_pair("DBS", 3, dbs3, 2, dbs2);
+	dbs_4 = check_pair("DBS", 4, dbs4, 3, dbs3);
+	dbs_5 = check_pair("DBS", 5, dbs5, 4, dbs4);
+	iop_2 = check_pair("IOP", 2, iop2, 1, iop1);
+	iop_3 = check_pair("IOP", 3, iop3, 2, iop2);
+	iop_5 = check_pair("IOP", 5, iop5, 3, iop3);
 
-    puts("\nЖурнал инцидентов:");
-    if (incident_count == 0) {
-        puts("Инцидентов не обнаружено.");
-    } else {
-        for (int i = 0; i < incident_count; i++) {
-            printf("Время %d, тип %d\n", incidents[i].time, incidents[i].type);
-        }
-    }
+	puts("\nТаблица 2. Состояния компонентов по отсчётам");
+	puts("Время\tWEB\tDBS\tIOP\tИнцидент");
+	print_point(1, web_1, dbs_1, iop_1);
+	print_point(2, web_2, dbs_2, iop_2);
+	print_point(3, web_3, dbs_3, iop_3);
+	print_point(4, web_4, dbs_4, iop_4);
+	print_point(5, web_5, dbs_5, iop_5);
 
-    printf("\nРассчитано значений Q: %d\n", q_count);
+	puts("\nЖурнал инцидентов:");
+	check_incident(1, web_1, dbs_1, iop_1, &incident_count);
+	check_incident(2, web_2, dbs_2, iop_2, &incident_count);
+	check_incident(3, web_3, dbs_3, iop_3, &incident_count);
+	check_incident(4, web_4, dbs_4, iop_4, &incident_count);
+	check_incident(5, web_5, dbs_5, iop_5, &incident_count);
 
-    system("pause");
-    return 0;
+	if (incident_count == 0) {
+		puts("Инцидентов не обнаружено.");
+	}
+
+	printf("\nРассчитано значений Q: %d\n", PAIR_COUNT);
+
+	system("pause");
+	return 0;
+}
+
+/*
+ * Назначение: расчёт показателя Q для пары измерений и вывод
+ * строки таблицы 1.
+ * Параметры: pname - имя компонента;
+ *            t, x - текущее измерение;
+ *            t_prev, x_prev - предыдущее измерение.
+ * Возврат: состояние компонента на текущем отсчёте.
+ */
+int check_pair(const char *pname, int t, float x, int t_prev,
+	float x_prev) {
+	double q;
+	int state;
+
+	q = log((double)x / x_prev);
+
+	if (q < L_MIN || q > L_MAX) {
+		state = STATE_ALARM;
+	} else {
+		state = STATE_NORMAL;
+	}
+
+	printf("%-9s %-7d %-4.1f %-9d %-6.1f %-7.4f %s\n",
+		pname, t, x, t_prev, x_prev, q, state_name(state));
+
+	return state;
+}
+
+/*
+ * Назначение: проверка правила инцидента.
+ * Параметры: web_state, dbs_state, iop_state - состояния компонентов.
+ * Возврат: 1 при тревоге всех компонентов, иначе 0.
+ */
+int is_incident(int web_state, int dbs_state, int iop_state) {
+	return web_state == STATE_ALARM && dbs_state == STATE_ALARM
+		&& iop_state == STATE_ALARM;
+}
+
+/*
+ * Назначение: вывод строки таблицы 2 для одного отсчёта.
+ * Параметры: t - номер отсчёта;
+ *            web_state, dbs_state, iop_state - состояния компонентов.
+ */
+void print_point(int t, int web_state, int dbs_state, int iop_state) {
+	printf("%d\t%s\t%s\t%s\t%s\n", t, state_name(web_state),
+		state_name(dbs_state), state_name(iop_state),
+		is_incident(web_state, dbs_state, iop_state) ? "ДА" : "нет");
+}
+
+/*
+ * Назначение: проверка инцидента на отсчёте и вывод записи журнала.
+ * Параметры: t - номер отсчёта;
+ *            web_state, dbs_state, iop_state - состояния компонентов;
+ *            pincident_count - счётчик найденных инцидентов.
+ */
+void check_incident(int t, int web_state, int dbs_state, int iop_state,
+	int *pincident_count) {
+	Incident incident;
+
+	if (!is_incident(web_state, dbs_state, iop_state)) {
+		return;
+	}
+
+	incident.time = t;
+	incident.type = INCIDENT_ALL_ALARM;
+	printf("Время %d, тип %d\n", incident.time, incident.type);
+	(*pincident_count)++;
+}
+
+/*
+ * Назначение: текстовое название состояния компонента.
+ * Параметр: state - код состояния STATE_NONE, STATE_NORMAL
+ *           или STATE_ALARM.
+ * Возврат: указатель на строку с названием состояния.
+ */
+const char *state_name(int state) {
+	if (state == STATE_NONE) {
+		return "нет Q";
+	}
+	if (state == STATE_ALARM) {
+		return "ТРЕВОГА";
+	}
+	return "НОРМА";
 }
